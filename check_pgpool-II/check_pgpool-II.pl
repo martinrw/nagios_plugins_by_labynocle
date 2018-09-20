@@ -97,7 +97,7 @@ my ($pcp_directory,$pcp_host,$pcp_port,$pcp_user,$pcp_password) = ('','127.0.0.1
 Getopt::Long::Configure("no_ignore_case");
 my $getoptret = GetOptions(
 			'd|pcp-dir=s'		=> \$pcp_directory,
-			'H|host=s'		    => \$pcp_host,
+			'H|host=s'		=> \$pcp_host,
 			'P|port=s'	    	=> \$pcp_port,
 			'U|user=s'  		=> \$pcp_user,
 			'W|password=s'		=> \$pcp_password,
@@ -133,7 +133,7 @@ if ((! -e "$pcp_directory/pcp_node_count") or (! -e "$pcp_directory/pcp_node_inf
 
 # Core script
 # -----------
-my $pcp_command_arg="$timeout $pcp_host $pcp_port $pcp_user $pcp_password";
+my $pcp_command_arg="-h $pcp_host -p $pcp_port -U $pcp_user -w";
 my $pcp_command_node_count = "$pcp_directory/pcp_node_count $pcp_command_arg";
 my $pcp_command_node_info = "$pcp_directory/pcp_node_info $pcp_command_arg";
 my ($ok_count,$down_count) = (0,0);
@@ -202,7 +202,7 @@ Options:
     e.g. : /usr/local/pgpool-II/bin/
  -H, --host=STRING
     Specify the pgpool-II hostname 
- -p, --port=STRING
+ -P, --port=STRING
     Specify the PCP port
  -U, --user=STRING
     Specify the username for PCP authentication
