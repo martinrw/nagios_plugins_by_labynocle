@@ -14,7 +14,7 @@
 #     - see the How to use section
 #
 #  Out :
-#     - print on the standard output 
+#     - print on the standard output
 #
 #  Features :
 #     - perfdata output
@@ -46,8 +46,10 @@
 # ------------
 #
 #   - first you have to configure PgPool to accept PCP commands.
-#   To do this, I recommand to follow this tutorial: 
+#   To do this, I recommand to follow this tutorial:
 #                   http://yoolink.to/jvG
+#
+#		- the .pcppass file must be set up for authentication - http://www.pgpool.net/docs/latest/en/html/pcp-commands.html
 #
 #   - then display the help of this plugin to see how to use it
 #       ./check_pgpool-II.pl --help
@@ -57,7 +59,10 @@
 # ####################################################################
 # Changelog :
 # -----------
-#
+#--------------------------------------------------------------------
+#   Date:24/09/2018   Version:0.2     Author:Martin Wyett
+#   >> Make it work with the latest version of the pcp commands
+#   >> introduce a check for watchdog
 # --------------------------------------------------------------------
 #   Date:18/03/2011   Version:0.1.1     Author:Erwan Ben Souiden
 #   >> little update of the help
@@ -66,18 +71,13 @@
 #   >> creation
 # ####################################################################
 
-# ####################################################################
-#            Don't touch anything under this line!
-#        You shall not pass - Gandalf is watching you
-# ####################################################################
-
 use strict;
 use warnings;
 use Getopt::Long qw(:config no_ignore_case);
 
 # Generic variables
 # -----------------
-my $version = '0.1.1';
+my $version = '0.2';
 my $author = 'Erwan Labynocle Ben Souiden';
 my $a_mail = 'erwan@aleikoum.net';
 my $script_name = 'check_pgpool-II.pl';
@@ -93,23 +93,24 @@ my %ERRORS=('OK'=>0,'WARNING'=>1,'CRITICAL'=>2,'UNKNOWN'=>3,'DEPENDENT'=>4);
 my $display = 'CHECK_PGPOOL-II - ';
 my ($critical,$warning,$timeout,$backends) = (2,1,10,0);
 my ($pcp_directory,$pcp_host,$pcp_port,$pcp_user,$pcp_password) = ('','127.0.0.1','9898','admin','adminpassword');
+my $check = "";
 
 Getopt::Long::Configure("no_ignore_case");
 my $getoptret = GetOptions(
 			'd|pcp-dir=s'		=> \$pcp_directory,
-			'H|host=s'		=> \$pcp_host,
-			'P|port=s'	    	=> \$pcp_port,
+			'H|host=s'		  => \$pcp_host,
+			'P|port=s'	    => \$pcp_port,
 			'U|user=s'  		=> \$pcp_user,
-			'W|password=s'		=> \$pcp_password,
 			'w|warning=i'		=> \$warning,
-			'c|critical=i'		=> \$critical,
-			'b|backends=i'		=> \$backends,
+			'c|critical=i'	=> \$critical,
+			'C|check=s'		  => \$check,
+			'b|backends=i'	=> \$backends,
 			't|timeout=i'		=> \$timeout,
 			'V|version' 		=> \$version_value,
 			'h|help'     		=> \$help_value,
-    		'D|display=s' 		=> \$display,
-    		'p|perfdata' 		=> \$perfdata_value,
-    		'v|verbose' 		=> \$verbose_value
+	    'D|display=s' 	=> \$display,
+    	'p|perfdata=i' 		=> \$perfdata_value,
+    	'v|verbose' 		=> \$verbose_value
 );
 
 print_usage() if ($help_value);
@@ -119,10 +120,10 @@ print_version() if ($version_value);
 # --------------------------------------
 
 print 'DEBUG: pcp_directory: '.$pcp_directory.'; pcp_host: '.$pcp_host.'; pcp_port: '.$pcp_port."\n" if ($verbose_value);
-print 'DEBUG: pcp_user: '.$pcp_user.'; pcp_password: '.$pcp_password."\n" if ($verbose_value);
+print 'DEBUG: pcp_user: '.$pcp_user if ($verbose_value);
 
-if (($pcp_directory eq "") or ($pcp_host eq "") or ($pcp_user eq "")) {
-    print $display.'one or more following arguments are missing: pcp_directory/pcp_host/pcp_user'."\n";
+if (($pcp_directory eq "") or ($pcp_host eq "") or ($pcp_user eq "") or ($check eq "")) {
+    print $display.'one or more following arguments are missing: pcp_directory/pcp_host/pcp_user/check'."\n";
     exit $ERRORS{"UNKNOWN"};
 }
 
@@ -131,38 +132,77 @@ if ((! -e "$pcp_directory/pcp_node_count") or (! -e "$pcp_directory/pcp_node_inf
     exit $ERRORS{"UNKNOWN"};
 }
 
+if (($check ne "node") and ($check ne "watchdog")) {
+    print $display."$check is not a valid option please choose either 'node' or 'watchdog'\n";
+    exit $ERRORS{"UNKNOWN"};
+}
+
+
 # Core script
 # -----------
 my $pcp_command_arg="-h $pcp_host -p $pcp_port -U $pcp_user -w";
 my $pcp_command_node_count = "$pcp_directory/pcp_node_count $pcp_command_arg";
 my $pcp_command_node_info = "$pcp_directory/pcp_node_info $pcp_command_arg";
+my $pcp_command_watchdog = "$pcp_directory/pcp_watchdog_info $pcp_command_arg";
 my ($ok_count,$down_count) = (0,0);
 my ($return,$node_return) = ('','');
 my $plugstate = 'OK';
 
-# how many nodes ?
-my $node_count=`$pcp_command_node_count`;
-chomp $node_count;
-print 'DEBUG: node_count: '.$node_count."\n" if ($verbose_value);
-
-# check node info
-for (my $node_to_check = 0; $node_to_check < $node_count; $node_to_check++) {
-	my @node_array = split(/ /, `$pcp_command_node_info $node_to_check`);
-	print 'DEBUG: node ip: '.$node_array[0].'; node status: '.$node_array[2]."\n" if ($verbose_value);
-	if ($node_array[2] == 3) {
-		$down_count ++;
-		$node_return .= " ($node_array[0],$node_array[2])";
+if ($check eq "node") {
+	# how many nodes ?
+	my $node_count=`$pcp_command_node_count`;
+	chomp $node_count;
+	print 'DEBUG: node_count: '.$node_count."\n" if ($verbose_value);
+	if ($node_count eq ''){
+    $plugstate = 'UNKNOWN';
+    exit $ERRORS{$plugstate};
 	}
+
+	# check node info
+	for (my $node_to_check = 0; $node_to_check < $node_count; $node_to_check++) {
+		my @node_array = split(/ /, `$pcp_command_node_info -n $node_to_check`);
+		print 'DEBUG: node ip: '.$node_array[0].'; node status: '.$node_array[2]."\n" if ($verbose_value);
+		if ($node_array[2] == 3) {
+			$down_count ++;
+			$node_return .= " ($node_array[0],$node_array[2])";
+		}
+	}
+	$return = $node_count.' backends detected';
+	$return .= ' and '.$backends.' waiting' if ($backends > $node_count);
+	$plugstate = 'WARNING' if ($down_count >= $warning);
+	$plugstate = 'CRITICAL' if (($down_count >= $critical) or ($backends > $node_count));
+	$return .= ' - nodes detected down '.$node_return if ($down_count >= $critical);
+	$return .= ' | down_nodes='.$down_count.' nodes_count='.$node_count if ($perfdata_value);
+	print $display.' node check '.$plugstate.' - '.$return."\n";
+	exit $ERRORS{$plugstate};
 }
 
-$return = $node_count.' backends detected';
-$return .= ' and '.$backends.' waiting' if ($backends > $node_count);
-$plugstate = 'WARNING' if ($down_count >= $warning);
-$plugstate = 'CRITICAL' if (($down_count >= $critical) or ($backends > $node_count));
-$return .= ' - nodes detected down '.$node_return if ($down_count >= $critical);
-$return .= ' | down_nodes='.$down_count.' nodes_count='.$node_count if ($perfdata_value);
-print $display.$plugstate.' - '.$return."\n";
-exit $ERRORS{$plugstate};
+if ($check eq "watchdog") {
+	#check watchdog info
+	my @watchdog_array = split(/: /, `$pcp_command_watchdog -n 0 -v`);
+
+	if ($? != 0){
+		$plugstate = 'UNKNOWN';
+		exit $ERRORS{$plugstate};
+	}
+
+	my $no_of_wd_nodes = (split/\n/, $watchdog_array[1])[0];
+	my $no_remote_wd_nodes = (split/\n/, $watchdog_array[2])[0];
+	my $wd_quorum_state = (split/\n/, $watchdog_array[3])[0];
+	my $master_wd_node = (split/\n/, $watchdog_array[9])[0];
+	my $this_wd_node = (split/\n/, $watchdog_array[15])[0];
+	$return = 'number of watchdog nodes is: '.$no_of_wd_nodes."\n";
+	$return.= 'number of remote watchdog nodes is: '.$no_remote_wd_nodes."\n";
+	$return.= 'Watchdog quorum state is: '.$wd_quorum_state."\n";
+	$return.= 'master watchdog nodes is: '.$master_wd_node."\n";
+	$return.= 'State of this watchdog node is: '.$this_wd_node."\n";
+
+	$plugstate = 'WARNING' if ($no_remote_wd_nodes > ($no_of_wd_nodes/2));
+	$plugstate = 'CRITICAL' if ($wd_quorum_state ne 'QUORUM EXIST');
+
+	print $display.' watchdog check '.$plugstate." - \n".$return."\n";
+	exit $ERRORS{$plugstate};
+}
 
 # ####################################################################
 # function 1 :  display the help
@@ -171,7 +211,7 @@ sub print_usage {
     print <<EOT;
 $script_name version $version by $author
 
-Usage : /<path-to>/$script_name -d /path/to/pcp-commands/ -H pgpool-II.hosttocheck.net -P 9898 -U username -W password [-p] [-D "$display"] [-v] [-c 2] [-w 1] [-t 10] [-b 0]
+Usage : /<path-to>/$script_name -d /path/to/pcp-commands/ -H pgpool-II.hosttocheck.net -P 9898 -U username -C checkname [-p] [-D "$display"] [-v] [-c 2] [-w 1] [-t 10] [-b 0]
 
 Options:
  -h, --help
@@ -179,7 +219,7 @@ Options:
  -V, --version
     Print version information
  -D, --display=STRING
-    To modify the output display... 
+    To modify the output display...
     default is "CHECK_PGPOOL-II - "
  -p, --perfdata
     If you want to activate the perfdata output
@@ -201,16 +241,15 @@ Options:
     Specify the path to pcp commands binaries directory
     e.g. : /usr/local/pgpool-II/bin/
  -H, --host=STRING
-    Specify the pgpool-II hostname 
+    Specify the pgpool-II hostname
  -P, --port=STRING
     Specify the PCP port
  -U, --user=STRING
     Specify the username for PCP authentication
- -W, --password=STRING
-    Specify the password for PCP authentication
-
+ -C, --check=STRING
+    Specify which check to run either node or watchdog
 .................
-  
+
 Send email to $a_mail if you have questions
 regarding use of this software. To submit patches or suggest improvements,
 send email to $a_mail
